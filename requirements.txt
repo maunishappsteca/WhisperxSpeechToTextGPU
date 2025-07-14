@@ -1,11 +1,13 @@
 # Core dependencies
 whisperx>=3.0.0
-openai-whisper>=20231117
-torch==2.1.0+cu118  # GPU-compatible version
-torchaudio==2.1.0+cu118
+openai-whisper>=20231117  # Explicit whisper dependency
+torch>=2.0.1
 boto3>=1.28.0
 ffmpeg-python>=0.2.0
 python-dotenv>=1.0.0
 runpod>=0.9.0
+
+# Backend accelerators
+torchaudio>=2.0.2
 faster-whisper>=0.10.0
 huggingface-hub>=0.19.0
