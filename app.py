@@ -8,12 +8,29 @@ import gc
 import json
 from typing import Optional
 from botocore.exceptions import ClientError
+import logging
+from datetime import datetime
 
 # --- Configuration ---
 COMPUTE_TYPE = "float16"  # Changed to float16 for better cuda compatibility
 BATCH_SIZE = 16  # Reduced batch size for cuda
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 MODEL_CACHE_DIR = os.getenv("WHISPER_MODEL_CACHE", "/app/models")
+
+
+# Configure logging
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler()  # Log to console
+        ]
+    )
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
+
 
 # Initialize S3 client
 s3 = boto3.client('s3') if S3_BUCKET else None
@@ -45,17 +62,17 @@ def convert_to_wav(input_path: str) -> str:
         ], check=True)
         return output_path
     except subprocess.CalledProcessError as e:
-        log(f"Fmpeg conversion failed error: {str(e)}", "ERROR")
+        logger.error(f"Fmpeg conversion failed error: {str(e)}")
         raise RuntimeError(f"FFmpeg conversion failed: {str(e)}")
     except Exception as e:
-        log(f"Audio conversion error: {str(e)}", "ERROR")
+        logger.error(f"Audio conversion error: {str(e)}")
         raise RuntimeError(f"Audio conversion error: {str(e)}")
 
 def load_model(model_size: str, language: Optional[str]):
     """Load Whisper model with GPU optimization"""
     try:
         if not ensure_model_cache_dir():
-            log(f"Model cache directory is not accessible", "ERROR")
+            logger.error(f"Model cache directory is not accessible")
             raise RuntimeError("Model cache directory is not accessible")
             
         return whisperx.load_model(
@@ -66,7 +83,7 @@ def load_model(model_size: str, language: Optional[str]):
             language=language if language and language != "-" else None
         )
     except Exception as e:
-        log(f"Model loading failed: {str(e)}", "ERROR")
+        logger.error(f"Model loading failed: {str(e)}")
         raise RuntimeError(f"Model loading failed: {str(e)}")
 
 def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], align: bool):
@@ -91,7 +108,7 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
                     return_char_alignments=False
                 )
             except Exception as e:
-                log(f"Alignment skipped: {str(e)}", "ERROR")
+                logger.error(f"Alignment skipped: {str(e)}")
                 print(f"Alignment skipped: {str(e)}")
         
         return {
@@ -101,7 +118,7 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
             "model": model_size
         }
     except Exception as e:
-        log(f"Transcription failed: {str(e)}", "ERROR")
+        logger.error(f"Transcription failed: {str(e)}")
         raise RuntimeError(f"Transcription failed: {str(e)}")
 
 def handler(job):
