@@ -1,8 +1,6 @@
 # Core dependencies
 whisperx>=3.0.0
 openai-whisper>=20231117
-torch==2.1.0+cu118  # GPU-compatible version
-torchaudio==2.1.0+cu118
 boto3>=1.28.0
 ffmpeg-python>=0.2.0
 python-dotenv>=1.0.0
