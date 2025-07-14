@@ -27,6 +27,7 @@ COPY app.py .
 
 # Install Python dependencies
 RUN pip install --upgrade pip
+RUN pip install --no-cache-dir torch==2.1.0+cu118 torchaudio==2.1.0+cu118 --index-url https://download.pytorch.org/whl/cu118 
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install huggingface hub for preloading Whisper model
