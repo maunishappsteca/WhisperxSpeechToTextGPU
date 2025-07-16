@@ -133,8 +133,10 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
         # Apply alignment if requested
         if align and detected_language != "unknown":
             try:
+                # Proper language code handling for alignment
+                language_code = detected_language if detected_language else "en"
                 align_model, metadata = whisperx.load_align_model(
-                    language_code=detected_language,
+                    language_code=language_code,
                     device="cuda"
                 )
                 result = whisperx.align(
@@ -203,6 +205,7 @@ def handler(job):
                 input_data.get("language", None),
                 input_data.get("align", False),
                 max_words=int(input_data.get("max_words", DEFAULT_MAX_WORDS))
+            )
         except Exception as e:
             return {"error": str(e)}
         finally:
@@ -232,8 +235,9 @@ if __name__ == "__main__":
             "input": {
                 "file_name": "test.wav",
                 "model_size": "base",
+                "language": "en",  # Explicit language test
                 "align": True,
-                "max_words": 3  # Test with strict 3-word segments
+                "max_words": 3
             }
         })
         print("Test Result:", json.dumps(test_result, indent=2))
