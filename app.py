@@ -6,17 +6,17 @@ import runpod
 import boto3
 import gc
 import json
-from typing import Optional
+from typing import Optional, Dict, Any
 from botocore.exceptions import ClientError
 import logging
 from datetime import datetime
+from deep_translator import GoogleTranslator
 
 # --- Configuration ---
-COMPUTE_TYPE = "float16"  # Changed to float16 for better cuda compatibility
-BATCH_SIZE = 16  # Reduced batch size for cuda
+COMPUTE_TYPE = "float16"
+BATCH_SIZE = 16
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 MODEL_CACHE_DIR = os.getenv("WHISPER_MODEL_CACHE", "/app/models")
-
 
 # Configure logging
 def setup_logging():
@@ -24,13 +24,12 @@ def setup_logging():
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.StreamHandler()  # Log to console
+            logging.StreamHandler()
         ]
     )
     return logging.getLogger(__name__)
 
 logger = setup_logging()
-
 
 # Initialize S3 client
 s3 = boto3.client('s3') if S3_BUCKET else None
@@ -39,14 +38,13 @@ def ensure_model_cache_dir():
     """Ensure model cache directory exists and is accessible"""
     try:
         os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-        # Test if directory is writable
         test_file = os.path.join(MODEL_CACHE_DIR, "test.tmp")
         with open(test_file, "w") as f:
             f.write("test")
         os.remove(test_file)
         return True
     except Exception as e:
-        print(f"Model cache directory error: {str(e)}")
+        logger.error(f"Model cache directory error: {str(e)}")
         return False
 
 def convert_to_wav(input_path: str) -> str:
@@ -62,7 +60,7 @@ def convert_to_wav(input_path: str) -> str:
         ], check=True)
         return output_path
     except subprocess.CalledProcessError as e:
-        logger.error(f"Fmpeg conversion failed error: {str(e)}")
+        logger.error(f"FFmpeg conversion failed: {str(e)}")
         raise RuntimeError(f"FFmpeg conversion failed: {str(e)}")
     except Exception as e:
         logger.error(f"Audio conversion error: {str(e)}")
@@ -72,7 +70,7 @@ def load_model(model_size: str, language: Optional[str]):
     """Load Whisper model with GPU optimization"""
     try:
         if not ensure_model_cache_dir():
-            logger.error(f"Model cache directory is not accessible")
+            logger.error("Model cache directory is not accessible")
             raise RuntimeError("Model cache directory is not accessible")
             
         return whisperx.load_model(
@@ -86,8 +84,24 @@ def load_model(model_size: str, language: Optional[str]):
         logger.error(f"Model loading failed: {str(e)}")
         raise RuntimeError(f"Model loading failed: {str(e)}")
 
-def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], align: bool):
-    """Core transcription logic"""
+def translate_text(text: str, target_lang: str, source_lang: str = "auto") -> str:
+    """Translate text only if target language is specified"""
+    if not text or target_lang == "-":
+        return text
+    try:
+        return GoogleTranslator(source=source_lang, target=target_lang).translate(text)
+    except Exception as e:
+        logger.error(f"Translation failed: {str(e)}")
+        return text  # Return original text if translation fails
+
+def transcribe_audio(
+    audio_path: str,
+    model_size: str,
+    language: Optional[str],
+    align: bool,
+    translate_to: Optional[str] = None
+) -> Dict[str, Any]:
+    """Core transcription logic with optimized translation calls"""
     try:
         model = load_model(model_size, language)
         result = model.transcribe(audio_path, batch_size=BATCH_SIZE)
@@ -109,22 +123,36 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
                 )
             except Exception as e:
                 logger.error(f"Alignment skipped: {str(e)}")
-                print(f"Alignment skipped: {str(e)}")
-        
-        return {
-            "text": " ".join(seg["text"] for seg in result["segments"]),
-            "segments": result["segments"],
+
+        full_text = " ".join(seg["text"] for seg in result["segments"])
+        output = {
             "language": detected_language,
-            "model": model_size
+            "model": model_size,
+            "segments": result["segments"],
+            "text": full_text
         }
+
+        # Only add translations if requested
+        if translate_to and translate_to != "-":
+            output["translated_text"] = translate_text(full_text, translate_to, detected_language)
+            output["translation_target"] = translate_to
+            
+            for segment in result["segments"]:
+                segment["textTranslated"] = translate_text(segment["text"], translate_to, detected_language)
+                
+                if "words" in segment:
+                    for word in segment["words"]:
+                        word["wordTranslated"] = translate_text(word["word"], translate_to, detected_language)
+
+        return output
+
     except Exception as e:
         logger.error(f"Transcription failed: {str(e)}")
         raise RuntimeError(f"Transcription failed: {str(e)}")
 
 def handler(job):
-    """RunPod serverless handler"""
+    """RunPod serverless handler with optimized translation flow"""
     try:
-        # Validate input
         if not job.get("input"):
             return {"error": "No input provided"}
             
@@ -134,14 +162,14 @@ def handler(job):
         if not file_name:
             return {"error": "No file_name provided in input"}
         
-        # 1. Download from S3
+        # Download from S3
         local_path = f"/tmp/{uuid.uuid4()}_{os.path.basename(file_name)}"
         try:
             s3.download_file(S3_BUCKET, file_name, local_path)
         except Exception as e:
             return {"error": f"S3 download failed: {str(e)}"}
         
-        # 2. Convert to WAV if needed
+        # Convert to WAV if needed
         try:
             if not file_name.lower().endswith('.wav'):
                 audio_path = convert_to_wav(local_path)
@@ -151,18 +179,18 @@ def handler(job):
         except Exception as e:
             return {"error": f"Audio processing failed: {str(e)}"}
         
-        # 3. Transcribe
+        # Transcribe (with optional translation)
         try:
             result = transcribe_audio(
                 audio_path,
                 input_data.get("model_size", "large-v3"),
-                input_data.get("language", None),
-                input_data.get("align", False)
+                input_data.get("language"),
+                input_data.get("align", False),
+                input_data.get("translate")  # None if not provided
             )
         except Exception as e:
             return {"error": str(e)}
         finally:
-            # 4. Cleanup
             if os.path.exists(audio_path):
                 os.remove(audio_path)
             gc.collect()
@@ -173,13 +201,11 @@ def handler(job):
         return {"error": f"Unexpected error: {str(e)}"}
 
 if __name__ == "__main__":
-    print("Starting WhisperX cuda Endpoint...")
+    print("Starting WhisperX Endpoint...")
     
-    # Verify model cache directory at startup
     if not ensure_model_cache_dir():
         print("ERROR: Model cache directory is not accessible")
         if os.environ.get("RUNPOD_SERVERLESS_MODE") == "true":
-            # In serverless mode, we want to fail fast if model dir isn't available
             raise RuntimeError("Model cache directory is not accessible")
     
     if os.environ.get("RUNPOD_SERVERLESS_MODE") == "true":
@@ -190,7 +216,8 @@ if __name__ == "__main__":
             "input": {
                 "file_name": "test.wav",
                 "model_size": "base",
-                "align": True
+                "align": True,
+                "translate": "ar"  # Test translation
             }
         })
         print("Test Result:", json.dumps(test_result, indent=2))
