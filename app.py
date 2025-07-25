@@ -87,7 +87,7 @@ def load_model(model_size: str, language: Optional[str]):
         raise RuntimeError(f"Model loading failed: {str(e)}")
 
 def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], align: bool):
-    """Core transcription logic"""
+    """Core transcription logic with robust alignment handling"""
     try:
         model = load_model(model_size, language)
         result = model.transcribe(audio_path, batch_size=BATCH_SIZE)
@@ -95,10 +95,32 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
         
         if align and detected_language != "unknown":
             try:
-                align_model, metadata = whisperx.load_align_model(
-                    language_code=detected_language,
-                    device="cuda"
-                )
+                # Try loading default alignment model first
+                try:
+                    align_model, metadata = whisperx.load_align_model(
+                        language_code=detected_language,
+                        device="cuda"
+                    )
+                except ValueError as e:
+                    # If default model fails, check for known alternatives
+                    custom_models = {
+                        'gu': 'facebook/wav2vec2-large-xlsr-53-gujarati',  # Gujarati model
+                        # Add other language models as needed
+                        'hi': 'facebook/wav2vec2-large-xlsr-53-hindi', # Hindi model
+                        'ta': 'facebook/wav2vec2-large-xlsr-53-tamil', # tamil model
+                    }
+                    
+                    if detected_language in custom_models:
+                        logger.info(f"Using custom alignment model for {detected_language}")
+                        align_model, metadata = whisperx.load_align_model(
+                            model_name=custom_models[detected_language],
+                            device="cuda"
+                        )
+                    else:
+                        logger.warning(f"No alignment model available for {detected_language}")
+                        raise ValueError(f"No alignment model for {detected_language}")
+
+                # Perform alignment if we have a model
                 result = whisperx.align(
                     result["segments"],
                     align_model,
@@ -108,14 +130,15 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
                     return_char_alignments=False
                 )
             except Exception as e:
-                logger.error(f"Alignment skipped: {str(e)}")
-                print(f"Alignment skipped: {str(e)}")
+                logger.warning(f"Alignment skipped for {detected_language}: {str(e)}")
+                # Continue without alignment rather than failing
         
         return {
             "text": " ".join(seg["text"] for seg in result["segments"]),
             "segments": result["segments"],
             "language": detected_language,
-            "model": model_size
+            "model": model_size,
+            "alignment_skipped": align and detected_language != "unknown" and "words" not in result["segments"][0]  # Flag if alignment was attempted but skipped
         }
     except Exception as e:
         logger.error(f"Transcription failed: {str(e)}")
