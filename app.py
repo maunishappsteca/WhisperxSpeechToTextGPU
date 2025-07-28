@@ -17,7 +17,6 @@ BATCH_SIZE = 16  # Reduced batch size for cuda
 S3_BUCKET = os.environ.get("S3_BUCKET_NAME")
 MODEL_CACHE_DIR = os.getenv("WHISPER_MODEL_CACHE", "/app/models")
 
-
 # Configure logging
 def setup_logging():
     logging.basicConfig(
@@ -30,7 +29,6 @@ def setup_logging():
     return logging.getLogger(__name__)
 
 logger = setup_logging()
-
 
 # Initialize S3 client
 s3 = boto3.client('s3') if S3_BUCKET else None
@@ -46,7 +44,7 @@ def ensure_model_cache_dir():
         os.remove(test_file)
         return True
     except Exception as e:
-        print(f"Model cache directory error: {str(e)}")
+        logger.error(f"Model cache directory error: {str(e)}")
         return False
 
 def convert_to_wav(input_path: str) -> str:
@@ -62,7 +60,7 @@ def convert_to_wav(input_path: str) -> str:
         ], check=True)
         return output_path
     except subprocess.CalledProcessError as e:
-        logger.error(f"Fmpeg conversion failed error: {str(e)}")
+        logger.error(f"FFmpeg conversion failed error: {str(e)}")
         raise RuntimeError(f"FFmpeg conversion failed: {str(e)}")
     except Exception as e:
         logger.error(f"Audio conversion error: {str(e)}")
@@ -86,6 +84,35 @@ def load_model(model_size: str, language: Optional[str]):
         logger.error(f"Model loading failed: {str(e)}")
         raise RuntimeError(f"Model loading failed: {str(e)}")
 
+def load_alignment_model(language_code: str):
+    """Load alignment model with fallback options"""
+    try:
+        # Try to load the default model first
+        return whisperx.load_align_model(language_code=language_code, device="cuda")
+    except Exception as e:
+        logger.warning(f"Failed to load default alignment model for {language_code}, trying fallback: {str(e)}")
+        
+        # Define fallback models for specific languages
+        fallback_models = {
+            "hi": "theainerd/Wav2Vec2-large-xlsr-hindi",  # Hindi
+            "pt": "jonatasgrosman/wav2vec2-large-xlsr-53-portuguese", # Portuguese
+            "he": "imvladikon/wav2vec2-xls-r-300m-hebrew", # Hebrew
+        }
+        
+        if language_code in fallback_models:
+            try:
+                # Try to load the fallback model
+                return whisperx.load_align_model(
+                    model_name=fallback_models[language_code],
+                    device="cuda"
+                )
+            except Exception as fallback_e:
+                logger.error(f"Failed to load fallback alignment model for {language_code}: {str(fallback_e)}")
+                raise RuntimeError(f"Alignment model loading failed for {language_code}")
+        else:
+            logger.error(f"No alignment model available for language: {language_code}")
+            raise RuntimeError(f"No alignment model available for language: {language_code}")
+
 def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], align: bool):
     """Core transcription logic"""
     try:
@@ -95,10 +122,7 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
         
         if align and detected_language != "unknown":
             try:
-                align_model, metadata = whisperx.load_align_model(
-                    language_code=detected_language,
-                    device="cuda"
-                )
+                align_model, metadata = load_alignment_model(detected_language)
                 result = whisperx.align(
                     result["segments"],
                     align_model,
@@ -109,13 +133,15 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
                 )
             except Exception as e:
                 logger.error(f"Alignment skipped: {str(e)}")
-                print(f"Alignment skipped: {str(e)}")
+                # Continue without alignment if it fails
+                result["alignment_error"] = str(e)
         
         return {
             "text": " ".join(seg["text"] for seg in result["segments"]),
             "segments": result["segments"],
             "language": detected_language,
-            "model": model_size
+            "model": model_size,
+            "alignment_success": "alignment_error" not in result
         }
     except Exception as e:
         logger.error(f"Transcription failed: {str(e)}")
@@ -190,6 +216,7 @@ if __name__ == "__main__":
             "input": {
                 "file_name": "test.wav",
                 "model_size": "base",
+                "language": "hi",
                 "align": True
             }
         })
