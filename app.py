@@ -10,6 +10,7 @@ from typing import Optional
 from botocore.exceptions import ClientError
 import logging
 from datetime import datetime
+from translate import Translator
 
 # --- Configuration ---
 COMPUTE_TYPE = "float16"  # Changed to float16 for better cuda compatibility
@@ -113,7 +114,12 @@ def load_alignment_model(language_code: str):
             logger.error(f"No alignment model available for language: {language_code}")
             raise RuntimeError(f"No alignment model available for language: {language_code}")
 
-def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], align: bool):
+
+
+
+
+
+def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], align: bool, translate_to: Optional[str]):
     """Core transcription logic"""
     try:
         model = load_model(model_size, language)
@@ -136,9 +142,25 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
                 # Continue without alignment if it fails
                 result["alignment_error"] = str(e)
         
+
+        # Translate if requested
+        translated_text = None
+        translated_segments = None
+
+
+        if translate_to and translate_to != "-":
+            full_text = " ".join(seg["text"] for seg in result["segments"])
+            translation_result = translate_text(full_text, translate_to, detected_language)
+            if translation_result:
+                translated_text = translation_result["text"]
+            
+            translated_segments = translate_segments(result["segments"], translate_to, detected_language)
+
+
         return {
             "text": " ".join(seg["text"] for seg in result["segments"]),
-            "segments": result["segments"],
+            "textTranslation": translated_text,
+            "segments": translated_segments if translated_segments else result["segments"],
             "language": detected_language,
             "model": model_size,
             "alignment_success": "alignment_error" not in result
@@ -183,7 +205,8 @@ def handler(job):
                 audio_path,
                 input_data.get("model_size", "large-v3"),
                 input_data.get("language", None),
-                input_data.get("align", False)
+                input_data.get("align", True),
+                input_data.get("translateTo", "-")  # Default to no translation
             )
         except Exception as e:
             return {"error": str(e)}
@@ -217,6 +240,7 @@ if __name__ == "__main__":
                 "file_name": "test.wav",
                 "model_size": "base",
                 "language": "hi",
+                "translateTo": "en",
                 "align": True
             }
         })
