@@ -114,13 +114,63 @@ def load_alignment_model(language_code: str):
             logger.error(f"No alignment model available for language: {language_code}")
             raise RuntimeError(f"No alignment model available for language: {language_code}")
 
+def translate_text(text: str, dest_lang: str, src_lang: str = "auto"):
+    """Translate text using translatepy library"""
+    if not text or dest_lang == "-":
+        return None
+    
+    try:
+        translator = Translator(to_lang=dest_lang, from_lang=src_lang)
+        translation = translator.translate(text)
+        return {
+            "text": str(translation),
+            "src_lang": src_lang
+        }
+    except Exception as e:
+        logger.error(f"Translation failed: {str(e)}")
+        return None
 
-
-
-
+def translate_segments(segments: list, dest_lang: str, src_lang: str):
+    """Translate segments and words within segments"""
+    if not segments or dest_lang == "-":
+        return segments
+    
+    translator = Translator(to_lang=dest_lang, from_lang=src_lang)
+    translated_segments = []
+    
+    for segment in segments:
+        # Translate the full segment text
+        segment_translation = None
+        try:
+            segment_translation = translator.translate(segment["text"])
+        except Exception as e:
+            logger.error(f"Segment translation failed: {str(e)}")
+        
+        # Translate individual words if they exist
+        word_translations = []
+        if "words" in segment:
+            for word in segment["words"]:
+                word_trans = None
+                try:
+                    word_trans = translator.translate(word["word"])
+                except Exception as e:
+                    logger.error(f"Word translation failed: {str(e)}")
+                
+                word_translations.append({
+                    **word,
+                    "translation": str(word_trans) if word_trans else None
+                })
+        
+        translated_segments.append({
+            **segment,
+            "translation": str(segment_translation) if segment_translation else None,
+            "words": word_translations if word_translations else segment.get("words", [])
+        })
+    
+    return translated_segments
 
 def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], align: bool, translate_to: Optional[str]):
-    """Core transcription logic"""
+    """Core transcription logic with optional translation"""
     try:
         model = load_model(model_size, language)
         result = model.transcribe(audio_path, batch_size=BATCH_SIZE)
@@ -142,12 +192,10 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
                 # Continue without alignment if it fails
                 result["alignment_error"] = str(e)
         
-
         # Translate if requested
         translated_text = None
         translated_segments = None
-
-
+        
         if translate_to and translate_to != "-":
             full_text = " ".join(seg["text"] for seg in result["segments"])
             translation_result = translate_text(full_text, translate_to, detected_language)
@@ -155,11 +203,10 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
                 translated_text = translation_result["text"]
             
             translated_segments = translate_segments(result["segments"], translate_to, detected_language)
-
-
+        
         return {
             "text": " ".join(seg["text"] for seg in result["segments"]),
-            "textTranslation": translated_text,
+            "translation": translated_text,
             "segments": translated_segments if translated_segments else result["segments"],
             "language": detected_language,
             "model": model_size,
@@ -205,7 +252,7 @@ def handler(job):
                 audio_path,
                 input_data.get("model_size", "large-v3"),
                 input_data.get("language", None),
-                input_data.get("align", True),
+                input_data.get("align", False),
                 input_data.get("translateTo", "-")  # Default to no translation
             )
         except Exception as e:
@@ -222,7 +269,7 @@ def handler(job):
         return {"error": f"Unexpected error: {str(e)}"}
 
 if __name__ == "__main__":
-    print("Starting WhisperX cuda Endpoint...")
+    print("Starting WhisperX cuda Endpoint with Translation...")
     
     # Verify model cache directory at startup
     if not ensure_model_cache_dir():
