@@ -132,8 +132,11 @@ def translate_text(text: str, dest_lang: str, src_lang: str = "auto"):
 
 def translate_segments(segments: list, dest_lang: str, src_lang: str):
     """Translate segments and words within segments"""
-    if not segments or dest_lang == "-":
+    if not segments:
         return segments
+    
+    if dest_lang == "-" or dest_lang == src_lang:
+        return format_segments(segments)
     
     translator = Translator(to_lang=dest_lang, from_lang=src_lang)
     translated_segments = []
@@ -158,16 +161,43 @@ def translate_segments(segments: list, dest_lang: str, src_lang: str):
                 
                 word_translations.append({
                     **word,
-                    "translation": str(word_trans) if word_trans else None
+                    "word_translation": str(word_trans) if word_trans else None
                 })
         
         translated_segments.append({
             **segment,
-            "translation": str(segment_translation) if segment_translation else None,
+            "text_translation": str(segment_translation) if segment_translation else None,
             "words": word_translations if word_translations else segment.get("words", [])
         })
     
     return translated_segments
+
+
+def format_segments(segments: list):
+    """Adds empty translation fields to all segments and words when no translation is requested."""
+    if not segments:
+        return segments
+
+    formatted_segments = []
+
+    for segment in segments:
+        words = segment.get("words", [])
+        word_translations = [
+            {
+                **word,
+                "word_translation": None
+            } for word in words
+        ]
+
+        formatted_segments.append({
+            **segment,
+            "text_translation": None,
+            "words": word_translations
+        })
+
+    return formatted_segments
+
+
 
 def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], align: bool, translate_to: Optional[str]):
     """Core transcription logic with optional translation"""
@@ -203,7 +233,9 @@ def transcribe_audio(audio_path: str, model_size: str, language: Optional[str], 
                 translated_text = translation_result["text"]
             
             translated_segments = translate_segments(result["segments"], translate_to, detected_language)
-        
+        else:
+            translated_segments = format_segments(result["segments"])
+
         return {
             "text": " ".join(seg["text"] for seg in result["segments"]),
             "translation": translated_text,
